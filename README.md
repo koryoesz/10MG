@@ -188,18 +188,6 @@ Next, log in as `officer@lagos-mfb.test` to **approve**, then as `finance@lagos-
 BASE_URL=http://127.0.0.1:8080/api/v1 ./scripts/demo.sh # against Docker
 ```
 
-### Adversarial probe
-
-[`scripts/probe.sh`](scripts/probe.sh) runs **151 checks** of the kind a senior reviewer would try. It covers cross-tenant loan, borrower and product IDs; suspended lenders and disabled staff; segregation of duties; idempotent retries and reused keys; duplicate payment references; overpayment; repaying a completed or cancelled loan; negative, zero and malformed amounts and tenors; a product deactivated after a quote; the open-loan limit; BVN/NIN KYC (blocked before verification, masked numbers, one BVN per business, 8 simultaneous submissions); and lender-controlled KYC settings (BVN-only, re-enabling a check, KYC off, per-lender isolation). It also fires **real parallel requests**: 12 simultaneous repayments, 10 retries sharing one key, concurrent approve and disburse by two officers, 8 simultaneous applications against the open-loan limit, and 8 identical sign-ups, registrations, product codes and staff emails racing past validation. These checks verify that balances, the ledger and the schedule stay exact, and that the losers get `422`, never `500`. How each race is prevented is documented in [ARCHITECTURE.md](docs/ARCHITECTURE.md#race-conditions).
-
-The server must run with several workers, otherwise requests are handled one at a time and the races are never exercised:
-
-```bash
-php artisan migrate:fresh --seed
-PHP_CLI_SERVER_WORKERS=12 php artisan serve --no-reload
-./scripts/probe.sh                     # exits non-zero if any check fails
-```
-
 ### Postman
 
 Import [`docs/postman_collection.json`](docs/postman_collection.json). It has **85 requests in eleven folders** and covers every endpoint. It carries **179 request-specific assertions** (status, key fields, maths such as *net payout = principal − upfront fees*, and what each role may see), plus four collection-level checks on every response: no `5xx`, JSON body, an `X-Request-Id` header and the `{message, error.code}` error envelope. **Run collection** in the Postman Runner therefore doubles as an end-to-end test:
