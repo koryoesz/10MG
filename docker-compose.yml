@@ -1,0 +1,30 @@
+# Runs the API and the scheduler against the MySQL server on this machine.
+#
+#   cp .env.docker.example .env.docker   # already done locally; holds the DB credentials
+#   docker compose up -d --build
+#   curl http://127.0.0.1:8080/up
+#
+# Host networking: MySQL's root account only accepts connections from localhost, and
+# with host networking the containers reach it on 127.0.0.1 exactly like a local process.
+name: tenmg-lending
+
+services:
+  app:
+    build: .
+    image: tenmg/lending-api:latest
+    network_mode: host
+    env_file: .env.docker
+    restart: unless-stopped
+
+  # loans:mark-overdue daily + idempotency key pruning.
+  scheduler:
+    image: tenmg/lending-api:latest
+    network_mode: host
+    env_file: .env.docker
+    environment:
+      RUN_MIGRATIONS: "false"
+      RUN_SEEDERS: "false"
+    command: ["php", "artisan", "schedule:work"]
+    depends_on:
+      - app
+    restart: unless-stopped

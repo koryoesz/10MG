@@ -1,0 +1,4937 @@
+{
+  "info": {
+    "name": "10MG Lending Core API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Demo flow for the multi-tenant healthcare lending API. Run the folders in order (or the whole collection in the Runner); every request asserts its expected status.\n\n**Pick a lender** with two collection variables: `tenant` (lender slug) and `admin_email` (its admin). Seeded: `lagos-mfb` / `admin@lagos-mfb.test`, `abuja-credit` / `admin@abuja-credit.test`. All seeded passwords: `Password123`.\n\n**Tenancy:** `X-Tenant` is sent only on login and public storefront calls. After login the bearer token alone decides the lender, so every back-office request acts only on that tenant.\n\n**Tokens:** three are kept apart so logging in as one actor never breaks another's requests: `operator_token` (platform), `token` (lender staff: admin, officer, finance), `borrower_token` (the pharmacy).\n\n**KYC:** each lender chooses its own policy (*2. KYC settings*): require verification or not, BVN check, NIN check, phone matching. With the defaults a borrower must pass *4. Borrower → Verify owner BVN & NIN* before *Apply for loan* (otherwise `422 KYC_REQUIRED`). Folder 8 shows every switch in action. In sandbox mode NIBSS and NIMC always answer with a full match.\n\nAmounts are in kobo (`20000000` = ₦200,000); rates in basis points (`3000` = 30% p.a.).\n\n**10MG platform fee:** a platform operator sets 10MG's fee per lender (rate and who pays); see folder 9. Default: 0.5% of the principal, paid by the lender."
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8080/api/v1"
+    },
+    {
+      "key": "tenant",
+      "value": "lagos-mfb"
+    },
+    {
+      "key": "admin_email",
+      "value": "admin@lagos-mfb.test"
+    },
+    {
+      "key": "other_tenant",
+      "value": "abuja-credit"
+    },
+    {
+      "key": "borrower_email",
+      "value": "ada@okaforpharmacy.test"
+    },
+    {
+      "key": "operator_token",
+      "value": ""
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "borrower_token",
+      "value": ""
+    },
+    {
+      "key": "unverified_token",
+      "value": ""
+    },
+    {
+      "key": "institution_id",
+      "value": ""
+    },
+    {
+      "key": "product_id",
+      "value": ""
+    },
+    {
+      "key": "fee_id",
+      "value": ""
+    },
+    {
+      "key": "officer_id",
+      "value": ""
+    },
+    {
+      "key": "customer_id",
+      "value": ""
+    },
+    {
+      "key": "loan_id",
+      "value": ""
+    },
+    {
+      "key": "alt_loan_id",
+      "value": ""
+    },
+    {
+      "key": "first_installment",
+      "value": ""
+    },
+    {
+      "key": "orig_fee_bps",
+      "value": ""
+    },
+    {
+      "key": "orig_fee_bearer",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Platform onboarding",
+      "description": "A lender signs up (pending) and a 10MG platform operator approves it. Skip *Register lender* for a lender that already exists.",
+      "item": [
+        {
+          "name": "Register lender (pending)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/institutions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "institutions"
+              ]
+            },
+            "description": "Registers the lender named by `tenant` with `admin_email` as its first admin. For a lender that already exists the API answers 422 (slug taken), which the test accepts so the walkthrough can be re-run.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institution\": {\n    \"name\": \"Ikeja Microfinance Bank\",\n    \"slug\": \"{{tenant}}\",\n    \"email\": \"hello@{{tenant}}.test\"\n  },\n  \"admin\": {\n    \"name\": \"Chief Executive\",\n    \"email\": \"{{admin_email}}\",\n    \"password\": \"Password123\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201 or 422', () => pm.expect([201, 422].includes(pm.response.code)).to.be.true);",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"created lender starts pending (422 = already exists)\", () => pm.expect(pm.response.code !== 201 || json.data.institution.status === 'pending').to.be.true);",
+                  "try { const v = json.data.institution.id; if (v !== undefined && v !== null) pm.collectionVariables.set('institution_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as platform operator",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "No X-Tenant header: platform operators belong to no lender.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"operator@10mg.test\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"operator token issued, no tenant\", () => pm.expect(typeof json.data.token === 'string' && json.data.user.institution_id === null).to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('operator_token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List institutions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions"
+              ]
+            },
+            "description": "All lenders, newest first. Captures the id of the lender named by `tenant` into `institution_id`, whatever its status. Add `?status=pending` to see only those awaiting approval (pagination links keep the filter).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"lender from `tenant` found\", () => pm.expect((json.data || []).some(i => i.slug === pm.collectionVariables.get('tenant'))).to.be.true);",
+                  "pm.test(\"paginated\", () => pm.expect(typeof json.meta.total === 'number').to.be.true);",
+                  "try { const v = (json.data || []).find(i => i.slug === pm.collectionVariables.get('tenant')).id; if (v !== undefined && v !== null) pm.collectionVariables.set('institution_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lender detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions/{{institution_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions",
+                "{{institution_id}}"
+              ]
+            },
+            "description": "The lender as the platform sees it: status, branding and its KYC policy (`kyc_settings`: whether KYC is required, BVN / NIN checks, phone matching). A lender that never set its own policy shows the platform defaults.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC settings included\", () => pm.expect(Array.isArray(json.data.kyc_settings.enabled_checks)).to.be.true);",
+                  "pm.test(\"platform fee terms shown\", () => pm.expect(typeof json.data.platform_fee.rate_bps === 'number' && ['lender','borrower'].includes(json.data.platform_fee.bearer)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Activate lender",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions/{{institution_id}}/activate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions",
+                "{{institution_id}}",
+                "activate"
+              ]
+            },
+            "description": "409 INVALID_INSTITUTION_STATE means the lender is already active (re-run or seeded lender).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"CBN licence and directors verified\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 or 409', () => pm.expect([200, 409].includes(pm.response.code)).to.be.true);",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"lender active (409 = already active)\", () => pm.expect(pm.response.code === 409 ? json.error.code === 'INVALID_INSTITUTION_STATE' : json.data.status === 'active').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Platform audit log",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/audit-logs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "audit-logs"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"audit entries listed\", () => pm.expect(Array.isArray(json.data)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Lender configuration (institution admin)",
+      "description": "White-label set-up by the lender's admin: branding, a product with fees, and the two back-office staff used in folder 5.",
+      "item": [
+        {
+          "name": "Login as lender admin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "X-Tenant picks the lender for login only; the returned token carries it from here on.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{admin_email}}\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"admin of this lender\", () => pm.expect(json.data.user.role === 'institution_admin').to.be.true);",
+                  "pm.test(\"token issued\", () => pm.expect(typeof json.data.token === 'string').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Who am I",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"admin permissions include KYC settings and platform fees\", () => pm.expect(json.data.permissions.includes('kyc-settings.manage') && json.data.permissions.includes('platform-fees.view')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Branding",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/branding",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "branding"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"display name set\", () => pm.expect(typeof json.data.display_name === 'string').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "KYC settings",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "The lender's own identity-check policy. A lender that never changed it gets the platform defaults (KYC required, BVN and NIN checks on, phone match off).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"policy fields present\", () => pm.expect(typeof json.data.kyc_required === 'boolean' && Array.isArray(json.data.enabled_checks)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update KYC settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "Partial update: send only the switches to change.\n\n* `kyc_required`: borrowers must pass every enabled check before applying.\n* `bvn_check_enabled` / `nin_check_enabled`: which registers to consult (NIBSS / NIMC).\n* `phone_match_required`: also fail when the phone does not match the register.\n\nRequiring KYC with both checks off is refused (422). Enabling a check later makes it outstanding for borrowers who have not passed it. This request sets the defaults so the walkthrough below behaves predictably; folder 8 shows each switch in action.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kyc_required\": true,\n  \"bvn_check_enabled\": true,\n  \"nin_check_enabled\": true,\n  \"phone_match_required\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"both checks enabled\", () => pm.expect(json.data.enabled_checks.length === 2).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update branding",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/branding",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "branding"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"display_name\": \"Ikeja Health Credit\",\n  \"primary_color\": \"#0B5FFF\",\n  \"secondary_color\": \"#FFB800\",\n  \"logo_url\": \"https://cdn.example.test/logo.svg\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"colour saved\", () => pm.expect(json.data.primary_color === '#0B5FFF').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create loan product",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loan-products",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loan-products"
+              ]
+            },
+            "description": "The code is timestamped so the request can be re-run.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Pharmacy Quick Restock\",\n  \"code\": \"RX-{{$timestamp}}\",\n  \"min_amount\": 1000000,\n  \"max_amount\": 50000000,\n  \"min_tenor\": 1,\n  \"max_tenor\": 6,\n  \"interest_rate_bps\": 3000,\n  \"interest_method\": \"reducing_balance\",\n  \"repayment_frequency\": \"monthly\",\n  \"grace_period_days\": 3,\n  \"late_fee_type\": \"percentage\",\n  \"late_fee_value\": 500,\n  \"eligible_business_types\": [\n    \"pharmacy\",\n    \"patent_medicine_store\"\n  ],\n  \"fees\": [\n    {\n      \"name\": \"Processing fee\",\n      \"calculation\": \"percentage\",\n      \"value\": 150,\n      \"charge_type\": \"upfront\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"rate stored in basis points\", () => pm.expect(json.data.interest_rate_bps === 3000).to.be.true);",
+                  "pm.test(\"processing fee attached\", () => pm.expect((json.data.fees || []).some(f => f.name === 'Processing fee')).to.be.true);",
+                  "try { const v = json.data.id; if (v !== undefined && v !== null) pm.collectionVariables.set('product_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add fee to product",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loan-products/{{product_id}}/fees",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loan-products",
+                "{{product_id}}",
+                "fees"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Insurance\",\n  \"calculation\": \"fixed\",\n  \"value\": 100000,\n  \"charge_type\": \"capitalized\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"capitalised insurance fee\", () => pm.expect(json.data.charge_type === 'capitalized' && json.data.value === 100000).to.be.true);",
+                  "try { const v = json.data.id; if (v !== undefined && v !== null) pm.collectionVariables.set('fee_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Loan product detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loan-products/{{product_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loan-products",
+                "{{product_id}}"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"same product\", () => pm.expect(json.data.id === pm.collectionVariables.get('product_id')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update loan product",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loan-products/{{product_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loan-products",
+                "{{product_id}}"
+              ]
+            },
+            "description": "Repricing affects new applications only; existing loans keep their snapshotted terms.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"interest_rate_bps\": 2800,\n  \"description\": \"Restock antimalarials, antibiotics and ORS\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"repriced to 28%\", () => pm.expect(json.data.interest_rate_bps === 2800).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List loan products",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loan-products",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loan-products"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"new product listed\", () => pm.expect((json.data || []).some(p => p.id === pm.collectionVariables.get('product_id'))).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create loan officer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/staff",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "staff"
+              ]
+            },
+            "description": "422 on re-run (email already used) is expected; *List staff* still captures the officer.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Tolu Officer\",\n  \"email\": \"officer@{{tenant}}.test\",\n  \"password\": \"Password123\",\n  \"role\": \"loan_officer\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "try { const v = json.data.id; if (v !== undefined && v !== null) pm.collectionVariables.set('officer_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create finance officer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/staff",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "staff"
+              ]
+            },
+            "description": "422 on re-run (email already used) is expected.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Femi Finance\",\n  \"email\": \"finance@{{tenant}}.test\",\n  \"password\": \"Password123\",\n  \"role\": \"finance_officer\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List staff",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/staff",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "staff"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"officer and finance officer exist\", () => pm.expect(['loan_officer','finance_officer'].every(r => (json.data || []).some(u => u.role === r))).to.be.true);",
+                  "try { const v = (json.data || []).find(u => u.email === 'officer@' + pm.collectionVariables.get('tenant') + '.test').id; if (v !== undefined && v !== null) pm.collectionVariables.set('officer_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Institution audit log",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/audit-logs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "audit-logs"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"only this lender's entries\", () => pm.expect((json.data || []).length > 0).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Storefront & borrower onboarding (public, X-Tenant)",
+      "description": "What a borrower sees on the lender's white-label site, then sign-up.",
+      "item": [
+        {
+          "name": "Storefront branding",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "tenant"
+              ]
+            },
+            "description": "Also returns `kyc`: whether verification is required and which checks apply, so the white-label app shows the right fields.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC requirements published\", () => pm.expect(Array.isArray(json.data.kyc.checks)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Product catalogue",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant/loan-products",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "tenant",
+                "loan-products"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"only active products of this lender\", () => pm.expect((json.data || []).some(p => p.id === pm.collectionVariables.get('product_id'))).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Quote",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant/loan-products/{{product_id}}/quote",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "tenant",
+                "loan-products",
+                "{{product_id}}",
+                "quote"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 20000000,\n  \"tenor\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"quote adds up\", () => pm.expect(json.data.total_repayable === json.data.principal_amount + json.data.total_interest + json.data.capitalized_fees).to.be.true);",
+                  "pm.test(\"net payout = principal \\u2212 upfront fees\", () => pm.expect(json.data.net_disbursement_amount === json.data.principal_amount - json.data.upfront_fees).to.be.true);",
+                  "pm.test(\"schedule has 4 installments\", () => pm.expect(json.data.schedule.length === 4).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register pharmacy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant/customers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "tenant",
+                "customers"
+              ]
+            },
+            "description": "Email, CAC number and phone are timestamped so the request can be re-run. The new borrower starts with KYC `pending`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contact_name\": \"Chioma Eze\",\n  \"email\": \"chioma.{{$timestamp}}@ezepharmacy.test\",\n  \"password\": \"Password123\",\n  \"business_name\": \"Eze Community Pharmacy\",\n  \"business_type\": \"pharmacy\",\n  \"registration_number\": \"RC{{$timestamp}}\",\n  \"licence_number\": \"PCN/PR/77812\",\n  \"licence_expires_at\": \"2027-12-31\",\n  \"year_established\": 2018,\n  \"phone\": \"+234{{$timestamp}}\",\n  \"city\": \"Ikeja\",\n  \"state\": \"Lagos\",\n  \"staff_count\": 6,\n  \"monthly_revenue\": 250000000,\n  \"monthly_expenses\": 180000000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC starts pending\", () => pm.expect(json.data.customer.kyc.status === 'pending').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('borrower_token', v); } catch (e) {}",
+                  "try { const v = json.data.customer.id; if (v !== undefined && v !== null) pm.collectionVariables.set('customer_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Borrower",
+      "description": "Runs as `borrower_token`, captured when the pharmacy registered in folder 3.",
+      "item": [
+        {
+          "name": "My business profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/business",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "business"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"own business\", () => pm.expect(json.data.id === pm.collectionVariables.get('customer_id')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My KYC status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"status and requirements\", () => pm.expect(typeof json.data.status === 'string' && Array.isArray(json.data.requirements.checks)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify owner BVN & NIN (KYC)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "Matches the owner's BVN with NIBSS and NIN with NIMC. Sandbox mode answers with a full match; numbers come back masked.\n\n* 409 `KYC_ALREADY_VERIFIED` if the owner is already verified (e.g. a seeded borrower).\n* 422 `KYC_VERIFICATION_FAILED` (live mode) lists the fields that did not match.\n* 422 on `bvn` if this BVN already backs another business at the same lender.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Chioma\",\n  \"last_name\": \"Eze\",\n  \"date_of_birth\": \"1986-02-14\",\n  \"phone\": \"+2348035550101\",\n  \"bvn\": \"2{{$timestamp}}\",\n  \"nin\": \"7{{$timestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC verified\", () => pm.expect(json.data.status === 'verified').to.be.true);",
+                  "pm.test(\"BVN is masked\", () => pm.expect(json.data.owner.bvn.masked.startsWith('*******')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update trading figures",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/business",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "business"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"monthly_revenue\": 300000000,\n  \"staff_count\": 7\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"net cash flow recomputed\", () => pm.expect(json.data.net_monthly_cash_flow === json.data.monthly_revenue - json.data.monthly_expenses).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Apply for loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "Requires verified KYC. Re-send with the same Idempotency-Key value to see the replay (`Idempotent-Replayed: true`).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_product_id\": \"{{product_id}}\",\n  \"amount\": 20000000,\n  \"tenor\": 4,\n  \"purpose\": \"inventory_restock\",\n  \"purpose_note\": \"Antimalarials and ORS\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"pending with a credit assessment\", () => pm.expect(json.data.status === 'pending' && typeof json.data.credit_assessment.score === 'number').to.be.true);",
+                  "pm.test(\"assessment provider recorded\", () => pm.expect(json.data.credit_assessment.provider === 'mock-healthcare-scorer').to.be.true);",
+                  "pm.test(\"borrower does not see 10MG commission\", () => pm.expect(!('platform_fee' in json.data)).to.be.true);",
+                  "try { const v = json.data.id; if (v !== undefined && v !== null) pm.collectionVariables.set('loan_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My loans",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"own loan listed\", () => pm.expect((json.data || []).some(l => l.id === pm.collectionVariables.get('loan_id'))).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Back office decisions",
+      "description": "Maker/checker: the loan officer approves, a different user (finance) disburses. Runs as `token`.",
+      "item": [
+        {
+          "name": "Login as loan officer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"officer@{{tenant}}.test\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"loan officer\", () => pm.expect(json.data.user.role === 'loan_officer').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List borrowers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/customers?business_type=pharmacy&search=Eze",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "customers"
+              ],
+              "query": [
+                {
+                  "key": "business_type",
+                  "value": "pharmacy"
+                },
+                {
+                  "key": "search",
+                  "value": "Eze"
+                }
+              ]
+            },
+            "description": "Filters: `search` (name, CAC number, phone), `business_type`, `state`. Paginated; links keep the filters.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"borrower from folder 3 listed\", () => pm.expect((json.data || []).some(c => c.id === pm.collectionVariables.get('customer_id'))).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrower detail (KYC status)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/customers/{{customer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "customers",
+                "{{customer_id}}"
+              ]
+            },
+            "description": "Staff see the KYC status but never the BVN or NIN.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC status shown\", () => pm.expect('status' in json.data.kyc).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrower loan history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/customers/{{customer_id}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "customers",
+                "{{customer_id}}",
+                "loans"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"the application is in the history\", () => pm.expect((json.data || []).some(l => l.id === pm.collectionVariables.get('loan_id'))).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Loan detail (with credit assessment)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"credit factors explained\", () => pm.expect(Array.isArray(json.data.credit_assessment.factors) || typeof json.data.credit_assessment.factors === 'object').to.be.true);",
+                  "pm.test(\"staff see the 10MG fee terms\", () => pm.expect(typeof json.data.platform_fee.amount === 'number').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/approve",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "approve"
+              ]
+            },
+            "description": "A `decline` recommendation needs `override_reason` instead of `note`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Six months of POS settlements reviewed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"approved by this officer\", () => pm.expect(json.data.status === 'approved' && json.data.reviewed_by !== null).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as finance officer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"finance@{{tenant}}.test\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"finance officer\", () => pm.expect(json.data.user.role === 'finance_officer').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Disburse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/disburse",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "disburse"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"loan disbursed\", () => pm.expect(json.data.status === 'disbursed').to.be.true);",
+                  "pm.test(\"schedule generated\", () => pm.expect(json.data.installments.length > 0).to.be.true);",
+                  "pm.test(\"balance = total repayable\", () => pm.expect(json.data.outstanding_balance === json.data.total_repayable).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Repayment schedule",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/schedule",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "schedule"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"installments numbered in order\", () => pm.expect((json.data || []).every((l, i) => l.sequence === i + 1)).to.be.true);",
+                  "pm.test(\"every installment has a due date\", () => pm.expect((json.data || []).every(l => typeof l.due_date === 'string')).to.be.true);",
+                  "try { const v = json.data[0].total_due; if (v !== undefined && v !== null) pm.collectionVariables.set('first_installment', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Record repayment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/repayments",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "repayments"
+              ]
+            },
+            "description": "Pays the first installment exactly. Re-using an `external_reference` returns 409 DUPLICATE_PAYMENT_REFERENCE.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": {{first_installment}},\n  \"channel\": \"bank_transfer\",\n  \"external_reference\": \"NIP-{{$timestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"first installment paid\", () => pm.expect(json.data.transaction.amount === Number(pm.collectionVariables.get('first_installment'))).to.be.true);",
+                  "pm.test(\"balance reduced by the payment\", () => pm.expect(json.data.loan.outstanding_balance === json.data.loan.total_repayable - json.data.loan.amount_paid).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ledger",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/transactions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "transactions"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"disbursement then repayment\", () => pm.expect((json.data || []).some(t => t.type === 'disbursement') && (json.data || []).some(t => t.type === 'repayment')).to.be.true);",
+                  "pm.test(\"ledger is append-only (balances chain)\", () => pm.expect((json.data || []).every(t => typeof t.balance_after === 'number')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Alternative endings",
+      "description": "The other ways an application can end. The borrower applies twice more: one is cancelled by the borrower, one rejected by the loan officer.",
+      "item": [
+        {
+          "name": "Apply again (to cancel)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_product_id\": \"{{product_id}}\",\n  \"amount\": 5000000,\n  \"tenor\": 2,\n  \"purpose\": \"working_capital\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"pending\", () => pm.expect(json.data.status === 'pending').to.be.true);",
+                  "try { const v = json.data.id; if (v !== undefined && v !== null) pm.collectionVariables.set('alt_loan_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel my loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{alt_loan_id}}/cancel",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{alt_loan_id}}",
+                "cancel"
+              ]
+            },
+            "description": "Borrowers can cancel only before disbursement.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Supplier extended credit instead\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"loan cancelled\", () => pm.expect(json.data.status === 'cancelled').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Apply again (to reject)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_product_id\": \"{{product_id}}\",\n  \"amount\": 5000000,\n  \"tenor\": 2,\n  \"purpose\": \"working_capital\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"pending\", () => pm.expect(json.data.status === 'pending').to.be.true);",
+                  "try { const v = json.data.id; if (v !== undefined && v !== null) pm.collectionVariables.set('alt_loan_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as loan officer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"officer@{{tenant}}.test\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"loan officer\", () => pm.expect(json.data.user.role === 'loan_officer').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{alt_loan_id}}/reject",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{alt_loan_id}}",
+                "reject"
+              ]
+            },
+            "description": "A reason is required.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Licence could not be verified\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"loan rejected\", () => pm.expect(json.data.status === 'rejected').to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Guard rails (expected refusals)",
+      "description": "Each request here is meant to be refused; the test checks the exact status and error code. Run after folders 1–6.",
+      "item": [
+        {
+          "name": "Register unverified pharmacy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant/customers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "tenant",
+                "customers"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contact_name\": \"Bayo Adeyemi\",\n  \"email\": \"bayo.{{$timestamp}}@adeyemichem.test\",\n  \"password\": \"Password123\",\n  \"business_name\": \"Adeyemi Chemists\",\n  \"business_type\": \"patent_medicine_store\",\n  \"registration_number\": \"BN{{$timestamp}}\",\n  \"licence_number\": \"PCN/PMS/4410\",\n  \"licence_expires_at\": \"2027-06-30\",\n  \"year_established\": 2020,\n  \"phone\": \"+235{{$timestamp}}\",\n  \"city\": \"Ikeja\",\n  \"state\": \"Lagos\",\n  \"monthly_revenue\": 90000000,\n  \"monthly_expenses\": 60000000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC pending\", () => pm.expect(json.data.customer.kyc.status === 'pending').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('unverified_token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Apply before KYC → 422 KYC_REQUIRED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_product_id\": \"{{product_id}}\",\n  \"amount\": 5000000,\n  \"tenor\": 2,\n  \"purpose\": \"inventory_restock\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{unverified_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 422', () => pm.response.to.have.status(422));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC_REQUIRED\", () => pm.expect(json.error.code === 'KYC_REQUIRED').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed BVN / NIN → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Bayo\",\n  \"last_name\": \"Adeyemi\",\n  \"date_of_birth\": \"1990-01-01\",\n  \"phone\": \"+2348030000000\",\n  \"bvn\": \"1234\",\n  \"nin\": \"ABCDEFGHIJK\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{unverified_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 422', () => pm.response.to.have.status(422));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"bvn and nin rejected\", () => pm.expect('bvn' in json.error.details && 'nin' in json.error.details).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "KYC without Idempotency-Key → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Bayo\",\n  \"last_name\": \"Adeyemi\",\n  \"date_of_birth\": \"1990-01-01\",\n  \"phone\": \"+2348030000000\",\n  \"bvn\": \"3{{$timestamp}}\",\n  \"nin\": \"8{{$timestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{unverified_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"IDEMPOTENCY_KEY_REQUIRED\", () => pm.expect(json.error.code === 'IDEMPOTENCY_KEY_REQUIRED').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resubmit KYC when verified → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Chioma\",\n  \"last_name\": \"Eze\",\n  \"date_of_birth\": \"1986-02-14\",\n  \"phone\": \"+2348035550101\",\n  \"bvn\": \"4{{$timestamp}}\",\n  \"nin\": \"9{{$timestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC_ALREADY_VERIFIED\", () => pm.expect(json.error.code === 'KYC_ALREADY_VERIFIED').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrower approving a loan → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/approve",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "approve"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"self-approval\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"FORBIDDEN\", () => pm.expect(json.error.code === 'FORBIDDEN').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token used with another lender's X-Tenant → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{other_tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "Set `other_tenant` to any lender other than `tenant`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"TENANT_MISMATCH\", () => pm.expect(json.error.code === 'TENANT_MISMATCH').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Overpayment → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/repayments",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "repayments"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 999999999999,\n  \"channel\": \"bank_transfer\",\n  \"external_reference\": \"NIP-OVER-{{$timestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 422', () => pm.response.to.have.status(422));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"OVERPAYMENT\", () => pm.expect(json.error.code === 'OVERPAYMENT').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrower self-reporting cash → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{loan_id}}/repayments",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{loan_id}}",
+                "repayments"
+              ]
+            },
+            "description": "Only finance staff who received cash can record it; borrowers may use bank_transfer, card, ussd, wallet or direct_debit.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 100000,\n  \"channel\": \"cash\",\n  \"external_reference\": \"CASH-{{$timestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 422', () => pm.response.to.have.status(422));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"channel rejected\", () => pm.expect('channel' in json.error.details).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approving a rejected loan → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans/{{alt_loan_id}}/approve",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans",
+                "{{alt_loan_id}}",
+                "approve"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"second thoughts\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"INVALID_LOAN_STATE\", () => pm.expect(json.error.code === 'INVALID_LOAN_STATE').to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. KYC policy: the lender's choice",
+      "description": "The lender's admin switches checks on and off and the effect on a borrower is shown. Uses the unverified pharmacy from folder 7 and restores the defaults at the end.",
+      "item": [
+        {
+          "name": "Login as lender admin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{admin_email}}\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"admin\", () => pm.expect(json.data.user.role === 'institution_admin').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BVN only: turn the NIN check off",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nin_check_enabled\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"only BVN enabled\", () => pm.expect(JSON.stringify(json.data.enabled_checks) === '[\"bvn\"]').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Storefront now asks for BVN only",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "tenant"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"checks = [bvn]\", () => pm.expect(JSON.stringify(json.data.kyc.checks) === '[\"bvn\"]').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrower verifies with BVN only (no NIN sent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "NIMC is not called and no NIN is asked for.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Bayo\",\n  \"last_name\": \"Adeyemi\",\n  \"date_of_birth\": \"1990-01-01\",\n  \"phone\": \"+2348030000000\",\n  \"bvn\": \"3{{$timestamp}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{unverified_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"verified with bvn\", () => pm.expect(json.data.status === 'verified' && JSON.stringify(json.data.checks_passed) === '[\"bvn\"]').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Turn the NIN check back on",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nin_check_enabled\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"both checks on\", () => pm.expect(json.data.enabled_checks.length === 2).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrower now has NIN outstanding",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "Passed checks are kept; only the newly enabled one is outstanding.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{unverified_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"nin outstanding\", () => pm.expect(JSON.stringify(json.data.outstanding_checks) === '[\"nin\"]' && json.data.can_apply === false).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Turn the KYC requirement off",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kyc_required\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"KYC optional\", () => pm.expect(json.data.kyc_required === false).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrower can apply without finishing KYC",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_product_id\": \"{{product_id}}\",\n  \"amount\": 5000000,\n  \"tenor\": 2,\n  \"purpose\": \"inventory_restock\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{unverified_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"application accepted\", () => pm.expect(json.data.status === 'pending').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Require KYC with no checks → 422",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "At least one check must stay on while KYC is required.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kyc_required\": true,\n  \"bvn_check_enabled\": false,\n  \"nin_check_enabled\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 422', () => pm.response.to.have.status(422));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"kyc_required rejected\", () => pm.expect('kyc_required' in json.error.details).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Strict mode: phone must match too",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "In live mode a stale BVN phone number now fails verification (sandbox always matches).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone_match_required\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"phone match on\", () => pm.expect(json.data.phone_match_required === true).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Restore default KYC settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/kyc-settings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kyc-settings"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kyc_required\": true,\n  \"bvn_check_enabled\": true,\n  \"nin_check_enabled\": true,\n  \"phone_match_required\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"defaults restored\", () => pm.expect(json.data.kyc_required === true && json.data.enabled_checks.length === 2 && json.data.phone_match_required === false).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. 10MG platform fee",
+      "description": "10MG's own fee on every disbursed loan, set per lender by a platform operator: a rate in basis points of the principal, borne by the lender (a commission; borrower cost unchanged) or by the borrower (an upfront fee shown in quotes). Terms are locked onto each loan when the borrower applies. Restores the lender's original terms at the end.",
+      "item": [
+        {
+          "name": "Lender's platform fee terms",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions/{{institution_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions",
+                "{{institution_id}}"
+              ]
+            },
+            "description": "`platform_fee` shows the rate, who bears it, and `is_default` when the lender uses the platform default (`PLATFORM_FEE_BPS`, `PLATFORM_FEE_BEARER`).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"platform_fee present\", () => pm.expect(typeof json.data.platform_fee.rate_bps === 'number').to.be.true);",
+                  "try { pm.collectionVariables.set('orig_fee_bps', json.data.platform_fee.rate_bps); pm.collectionVariables.set('orig_fee_bearer', json.data.platform_fee.bearer); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Set fee: borrower pays 1%",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions/{{institution_id}}/platform-fee",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions",
+                "{{institution_id}}",
+                "platform-fee"
+              ]
+            },
+            "description": "Platform operators only. `rate_bps` 0–1000 (0 waives the fee). Applies to applications from now on; existing loans keep their terms.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rate_bps\": 100,\n  \"bearer\": \"borrower\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"borrower bears 1%\", () => pm.expect(json.data.platform_fee.rate_bps === 100 && json.data.platform_fee.bearer === 'borrower').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Quote now discloses the 10MG fee",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/tenant/loan-products/{{product_id}}/quote",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "tenant",
+                "loan-products",
+                "{{product_id}}",
+                "quote"
+              ]
+            },
+            "description": "The borrower-borne fee is priced like any upfront fee: listed in `fees` and deducted from the payout.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 20000000,\n  \"tenor\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"10MG fee listed\", () => pm.expect((json.data.fees || []).some(f => f.name === '10MG platform fee' && f.amount === 200000)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Platform fees owed to 10MG (lender view)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform-fees",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform-fees"
+              ]
+            },
+            "description": "Lender admin and finance officers: this lender's current terms (`meta.terms`), the fee on each disbursed loan, and totals (`meta.summary`).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"terms and summary\", () => pm.expect('terms' in json.meta && 'summary' in json.meta).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Platform fee revenue (operator view)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/platform-fees",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "platform-fees"
+              ]
+            },
+            "description": "Every platform fee across lenders, newest first. Filters: `institution_id`, `from`, `to` (Y-m-d). Totals per bearer in `meta.summary`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"revenue recorded for the walkthrough loan\", () => pm.expect(json.meta.summary.total_amount > 0).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Restore the lender's original fee",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions/{{institution_id}}/platform-fee",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions",
+                "{{institution_id}}",
+                "platform-fee"
+              ]
+            },
+            "description": "Puts back the terms captured by the first request in this folder.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rate_bps\": {{orig_fee_bps}},\n  \"bearer\": \"{{orig_fee_bearer}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"original terms back\", () => pm.expect(json.data.platform_fee.rate_bps === Number(pm.collectionVariables.get('orig_fee_bps')) && json.data.platform_fee.bearer === pm.collectionVariables.get('orig_fee_bearer')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Housekeeping (optional)",
+      "description": "Admin clean-up actions. Run after the walkthrough; they log you in as the admin again.",
+      "item": [
+        {
+          "name": "Login as lender admin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{admin_email}}\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"admin\", () => pm.expect(json.data.user.role === 'institution_admin').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('token', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deactivate loan officer",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/staff/{{officer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "staff",
+                "{{officer_id}}"
+              ]
+            },
+            "description": "Deactivation revokes the officer's tokens immediately.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"inactive\", () => pm.expect(json.data.is_active === false).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reactivate loan officer",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/staff/{{officer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "staff",
+                "{{officer_id}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"active again\", () => pm.expect(json.data.is_active === true).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Remove product fee",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loan-products/{{product_id}}/fees/{{fee_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loan-products",
+                "{{product_id}}",
+                "fees",
+                "{{fee_id}}"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Archive loan product",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loan-products/{{product_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loan-products",
+                "{{product_id}}"
+              ]
+            },
+            "description": "Soft delete: existing loans keep their snapshotted terms.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/logout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"logged out\", () => pm.expect(json.message === 'Logged out.').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Suspend lender (platform)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions/{{institution_id}}/suspend",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions",
+                "{{institution_id}}",
+                "suspend"
+              ]
+            },
+            "description": "Revokes every token held by the lender's users; logins return 403 TENANT_INACTIVE.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Demo suspension\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"suspended\", () => pm.expect(json.data.status === 'suspended').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reactivate lender (platform)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/platform/institutions/{{institution_id}}/activate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "platform",
+                "institutions",
+                "{{institution_id}}",
+                "activate"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Demo complete\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{operator_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"active\", () => pm.expect(json.data.status === 'active').to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11. Act as a seeded borrower (optional)",
+      "description": "Set `tenant` to the borrower's lender and `borrower_email` to the borrower (seeded: ada@okaforpharmacy.test on lagos-mfb, musa@belloclinic.test on abuja-credit). Replaces `borrower_token`, so run it on its own, not in the full walkthrough.",
+      "item": [
+        {
+          "name": "Login as seeded borrower",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant",
+                "value": "{{tenant}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{borrower_email}}\",\n  \"password\": \"Password123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"borrower\", () => pm.expect(json.data.user.role === 'customer').to.be.true);",
+                  "try { const v = json.data.token; if (v !== undefined && v !== null) pm.collectionVariables.set('borrower_token', v); } catch (e) {}",
+                  "try { const v = json.data.user.customer.id; if (v !== undefined && v !== null) pm.collectionVariables.set('customer_id', v); } catch (e) {}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My KYC status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/me/kyc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "me",
+                "kyc"
+              ]
+            },
+            "description": "Seeded borrowers are verified after `migrate:fresh --seed`; borrowers created before the KYC migration show `pending` and must run *4. Verify owner BVN & NIN*.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"status reported\", () => pm.expect(typeof json.data.status === 'string').to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My loans",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/loans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "loans"
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{borrower_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let json = {}; try { json = pm.response.json(); } catch (e) {}",
+                  "pm.test(\"list\", () => pm.expect(Array.isArray(json.data)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Runs after every request in the collection.",
+          "pm.test('[every request] no server error', () => pm.expect(pm.response.code < 500).to.be.true);",
+          "pm.test('[every request] X-Request-Id returned', () => pm.expect(pm.response.headers.has('X-Request-Id')).to.be.true);",
+          "if (pm.response.code !== 204) { pm.test('[every request] JSON body', () => pm.expect((pm.response.headers.get('Content-Type') || '').includes('application/json')).to.be.true); }",
+          "if (pm.response.code >= 400 && pm.response.code !== 429) { pm.test('[every request] error envelope {message, error.code}', () => { const b = pm.response.json(); pm.expect(typeof b.message === 'string' && typeof b.error.code === 'string').to.be.true; }); }"
+        ]
+      }
+    }
+  ]
+}

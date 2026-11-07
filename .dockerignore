@@ -1,0 +1,12 @@
+vendor
+node_modules
+.env
+database/database.sqlite
+storage/logs/*
+.phpunit.cache
+.git
+.env.docker
+bootstrap/cache/*.php
+storage/framework/cache/data/*
+storage/framework/views/*
+docs/*.pdf
